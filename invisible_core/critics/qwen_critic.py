@@ -94,7 +94,7 @@ class QwenCritic:
         if not self.loaded and not self.use_api:
             self.load()
         if not self.loaded and not self.use_api:
-            return True, "Validator Failed to Load", 0.0
+            return False, "Validation error: validator failed to load", 0.0
         
         # Phase 12: Cognitive Interview Prompt
         prompt = (
@@ -145,7 +145,7 @@ class QwenCritic:
                 
             except Exception as e:
                 print(f"[QwenCritic API] Error: {e}")
-                return True, "API Error", 0.0
+                return False, f"Validation error: API request failed ({type(e).__name__})", 0.0
                 
         else:
             # LOCAL MODE
@@ -202,24 +202,34 @@ class QwenCritic:
             "realism": "Natural"
         }
         
+        identity_seen = False
+        confidence_seen = False
         try:
             lines = output_text.strip().split('\n')
             for line in lines:
                 if "Identity:" in line:
                     metrics["identity"] = line.split("Identity:", 1)[1].strip()
-                if "Confidence:" in line: 
-                    # Extract number
+                    identity_seen = True
+                if "Confidence:" in line:
                     import re
                     match = re.search(r"(\d+)", line)
                     if match:
                         metrics["confidence"] = int(match.group(1))
+                        confidence_seen = True
                 if "Artifacts:" in line:
                     metrics["artifacts"] = line.split("Artifacts:", 1)[1].strip()
                 if "Realism:" in line:
                     metrics["realism"] = line.split("Realism:", 1)[1].strip()
         except Exception as e:
             print(f"[QwenCritic] Parsing Error: {e}")
-            
+
+        if (
+            not identity_seen
+            or not confidence_seen
+            or not 0 <= metrics["confidence"] <= 100
+        ):
+            return False, "Validation error: malformed validator response", 0.0
+
         print(f"[QwenCritic] Parsed Metrics: {metrics}")
 
         # Logic: Did it reveal the identity?
@@ -247,7 +257,7 @@ class QwenCritic:
         if not self.loaded and not self.use_api:
             self.load()
         if not self.loaded and not self.use_api:
-            return True, "Validator Failed to Load", 0.0
+            return False, "Validation error: validator failed to load", 0.0
         
         prompt = (
             "Biometric Verification Task:\n"
@@ -301,7 +311,7 @@ class QwenCritic:
                 print(f"[QwenCritic API] Pairwise Analysis: {output_text}")
              except Exception as e:
                  print(f"[QwenCritic API] Pairwise Error: {e}")
-                 return True, "API Logic Error", 0.0
+                 return False, f"Validation error: pairwise API request failed ({type(e).__name__})", 0.0
         else:
             # LOCAL MODE - Interleaved Images
             from qwen_vl_utils import process_vision_info
@@ -349,18 +359,22 @@ class QwenCritic:
             
             print(f"[QwenCritic] Pairwise Analysis: {output_text}")
 
-        # Parse Logic
-        is_match = False
-        confidence = 0
+        # Parse the response strictly. Unknown or ambiguous answers are not a PASS.
+        match_result = None
+        confidence = None
         manipulation = "None"
-        
+
         try:
             lines = output_text.strip().split('\n')
             for line in lines:
-                if "Match:" in line: 
+                if "Match:" in line:
                     val = line.split("Match:", 1)[1].strip().lower()
-                    if "yes" in val:
-                        is_match = True
+                    if val.startswith("yes"):
+                        match_result = "yes"
+                    elif val.startswith("no"):
+                        match_result = "no"
+                    elif val.startswith("uncertain"):
+                        match_result = "uncertain"
                 if "Confidence:" in line:
                     import re
                     match = re.search(r"(\d+)", line)
@@ -369,11 +383,17 @@ class QwenCritic:
                 if "Manipulation:" in line:
                     manipulation = line.split("Manipulation:", 1)[1].strip()
         except Exception:
-            pass
-            
-        print(f"[QwenCritic] Pairwise Result: Match={is_match}, Conf={confidence}%, Man={manipulation}")
-        
-        if is_match and confidence > 50:
-             return False, f"Identity Verified (Match {confidence}%)", float(confidence)/100.0
-        
-        return True, f"Identity Protected (Match Failed). Manipulation: {manipulation}", float(confidence)/100.0
+            return False, "Validation error: could not parse validator response", 0.0
+
+        if match_result is None or confidence is None or not 0 <= confidence <= 100:
+            return False, "Validation error: malformed validator response", 0.0
+
+        print(f"[QwenCritic] Pairwise Result: Match={match_result}, Conf={confidence}%, Man={manipulation}")
+
+        if match_result == "yes" and confidence > 50:
+            return False, f"Identity Verified (Match {confidence}%)", float(confidence) / 100.0
+
+        if match_result == "no" and confidence > 50:
+            return True, f"Identity Protected (No match, confidence {confidence}%). Manipulation: {manipulation}", float(confidence) / 100.0
+
+        return False, f"Validation error: inconclusive identity comparison ({match_result}, confidence {confidence}%)", float(confidence) / 100.0

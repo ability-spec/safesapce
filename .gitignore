@@ -77,3 +77,4 @@ history.enc
 runner_data/
 gitea_data/
 .env
+.venv/

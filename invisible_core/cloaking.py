@@ -332,6 +332,10 @@ class CloakEngine:
                         print("✅ Qwen-VL Validation Passed.")
                         break
                     else:
+                        # Validator errors are not image failures; stop expensive retries.
+                        if str(reason).startswith("Validation error:"):
+                            print("⚠️ Validation unavailable or inconclusive; stopping retries.")
+                            break
                         print(f"❌ Qwen-VL Validation Failed. {'Retrying with new random init...' if is_liquid_v2 else 'Increasing Strength...'}")
                         
                         if is_liquid_v2:
@@ -432,7 +436,11 @@ class CloakEngine:
             if compliance:
                 metrics["Layers Applied"].append("Stego-Compliance")
 
-            return True, heatmap_path, metrics
+            # Report success only when required validation passed.
+            operation_succeeded = visual_mode == "none" or (
+                visual_mode == "latent_diffusion" and passed
+            )
+            return operation_succeeded, heatmap_path, metrics
             
             
         except Exception as e:
